@@ -1,0 +1,55 @@
+mode: quick
+
+llm:
+  provider: ollama
+  model: qwen3:8b
+  base_url: http://localhost:11434
+  temperature: 0.2
+  max_tokens: 2048
+  request_timeout: 120
+
+safety:
+  access_mode: current_directory
+  profile: current_directory
+  working_directory: .
+  allowed_paths: []
+  read_only_paths:
+    - /etc
+  forbidden_paths:
+    - /root
+    - /proc
+    - /sys
+    - /dev
+    - /boot
+  forbidden_patterns: []
+  confirm_dangerous_commands: true
+
+ui:
+  show_reasoning: true
+  stream_responses: true
+
+agent:
+  max_iterations: 6
+  max_tool_calls: 12
+  history_max_messages: 30
+  dynamic_tools: true
+
+# Mode-specific section owned by modes/companion (ignored by core AppConfig).
+companion:
+  memory_dir: ~/.local/state/j-the-agent/companion/memory
+  web_provider: duckduckgo   # none | duckduckgo | brave | searxng | tavily
+  web_api_key: null
+  web_base_url: null         # e.g. SearXNG instance URL
+  allowed_local_ports: []    # e.g. [3000, 8080] for localhost fetch_url
+  hello_completed: false
+  user_name: null
+  agent_name: J
+  language: en               # en | ru
+  address_as: null
+  timezone_city: UTC
+  timezone: UTC
+  work_context: null
+  preferences: null
+  avoid: null
+
+plugins_dir: ~/.config/j-the-agent/plugins
