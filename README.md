@@ -264,7 +264,8 @@ bubblewrap, Docker или отдельного пользователя/конт
 ## Инструменты Quick
 
 - файлы: `read_file`, `list_directory`, `grep_search`, `write_file`,
-  `patch_file`;
+  `patch_file`, `create_directory`, `copy_path`, `move_path`, `delete_path`,
+  `path_info`, `find_files`;
 - shell/system: `run_command`, `get_system_info`, `disk_usage`,
   `listening_ports`;
 - сервисы: `service_status`, `restart_service`, `failed_services`,
@@ -280,7 +281,9 @@ bubblewrap, Docker или отдельного пользователя/конт
 ## Инструменты Companion
 
 - память: чтение и изменение `user.md`, `soul.md`, `memory.md`;
-- файлы и код: чтение, поиск, patch, git status/diff;
+- файлы: чтение, поиск, mkdir, copy/move/trash, `path_info`, `find_files`,
+  patch/write;
+- код: git status/diff/log, поиск и patch;
 - system: команды, процессы, диск и сведения об ОС;
 - web: поиск, чтение страницы, открытие URL;
 - apps/media: запуск приложений, clipboard, screenshot;

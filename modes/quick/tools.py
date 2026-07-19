@@ -119,6 +119,109 @@ def _patch_file(context: ToolContext, args: dict[str, Any]) -> str:
     return f"Patched {path}"
 
 
+def _resolve_destination(context: ToolContext, raw: str | Path) -> Path:
+    path = Path(raw).expanduser()
+    if path.exists():
+        return context.safety.check_write(path)
+    return context.safety.check_create(path)
+
+
+def _create_directory(context: ToolContext, args: dict[str, Any]) -> str:
+    raw = Path(args["path"]).expanduser()
+    parents = bool(args.get("parents", True))
+    if raw.exists():
+        path = context.safety.check_write(raw)
+        if path.is_dir():
+            return f"Directory already exists: {path}"
+        return _error("not_directory", f"Path exists and is not a directory: {path}")
+    path = context.safety.check_create(raw)
+    if not context.confirm(f"Allow J to create directory {path}?"):
+        return _error("user_denied", "Cancelled by user.")
+    path.mkdir(parents=parents, exist_ok=True)
+    return f"Created directory {path}"
+
+
+def _copy_path(context: ToolContext, args: dict[str, Any]) -> str:
+    source = context.safety.check_read(args["source"])
+    destination = _resolve_destination(context, args["destination"])
+    if not source.exists():
+        return _error("missing", f"Source not found: {source}")
+    if not context.confirm(f"Allow J to copy {source} → {destination}?"):
+        return _error("user_denied", "Cancelled by user.")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if source.is_dir():
+        shutil.copytree(source, destination, dirs_exist_ok=bool(args.get("overwrite", False)))
+    else:
+        if destination.exists() and destination.is_dir():
+            destination = destination / source.name
+            destination = context.safety.check_write(destination)
+        shutil.copy2(source, destination)
+    return f"Copied to {destination}"
+
+
+def _move_path(context: ToolContext, args: dict[str, Any]) -> str:
+    source = context.safety.check_write(args["source"])
+    destination = _resolve_destination(context, args["destination"])
+    if not source.exists():
+        return _error("missing", f"Source not found: {source}")
+    if not context.confirm(f"Allow J to move {source} → {destination}?"):
+        return _error("user_denied", "Cancelled by user.")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(source), str(destination))
+    return f"Moved to {destination}"
+
+
+def _delete_path(context: ToolContext, args: dict[str, Any]) -> str:
+    path = context.safety.check_write(args["path"])
+    if not path.exists():
+        return _error("missing", f"Path not found: {path}")
+    kind = "directory" if path.is_dir() else "file"
+    if not context.confirm(f"Allow J to permanently delete {kind} {path}?"):
+        return _error("user_denied", "Cancelled by user.")
+    if path.is_dir():
+        shutil.rmtree(path)
+    else:
+        path.unlink()
+    return f"Deleted {path}"
+
+
+def _path_info(context: ToolContext, args: dict[str, Any]) -> str:
+    path = context.safety.check_read(args["path"])
+    if not path.exists():
+        return _error("missing", f"Path not found: {path}")
+    stat = path.stat()
+    kind = "directory" if path.is_dir() else "symlink" if path.is_symlink() else "file"
+    mtime = datetime.fromtimestamp(stat.st_mtime).astimezone().isoformat(timespec="seconds")
+    return "\n".join(
+        (
+            f"path: {path}",
+            f"type: {kind}",
+            f"size: {human_size(stat.st_size)}",
+            f"modified: {mtime}",
+            f"mode: {oct(stat.st_mode)[-3:]}",
+        )
+    )
+
+
+def _find_files(context: ToolContext, args: dict[str, Any]) -> str:
+    root = context.safety.check_read(args.get("path", context.config.safety.working_directory))
+    pattern = str(args.get("pattern", "*")).strip() or "*"
+    max_results = min(max(int(args.get("max_results", 100)), 1), 500)
+    if not root.is_dir():
+        return _error("not_directory", f"Not a directory: {root}")
+    hits: list[str] = []
+    for match in sorted(root.rglob(pattern)):
+        if len(hits) >= max_results:
+            break
+        try:
+            safe = context.safety.check_read(match)
+        except SafetyError:
+            continue
+        suffix = "/" if safe.is_dir() else ""
+        hits.append(f"{safe}{suffix}")
+    return truncate_output("\n".join(hits) or "No matches.")
+
+
 def _run_command(context: ToolContext, args: dict[str, Any]) -> str:
     command = str(args["command"]).strip()
     workdir = context.safety.check_read(
@@ -301,6 +404,56 @@ def register_quick_tools(registry: ToolRegistry) -> None:
                 new_text={"type": "string", "_required": True},
             ),
             _patch_file,
+        ),
+        Tool(
+            "create_directory",
+            "Create a directory (and parents) after confirmation.",
+            _schema(
+                path={"type": "string", "_required": True},
+                parents={"type": "boolean", "default": True},
+            ),
+            _create_directory,
+        ),
+        Tool(
+            "copy_path",
+            "Copy a file or directory after confirmation.",
+            _schema(
+                source={"type": "string", "_required": True},
+                destination={"type": "string", "_required": True},
+                overwrite={"type": "boolean", "default": False},
+            ),
+            _copy_path,
+        ),
+        Tool(
+            "move_path",
+            "Move or rename a file or directory after confirmation.",
+            _schema(
+                source={"type": "string", "_required": True},
+                destination={"type": "string", "_required": True},
+            ),
+            _move_path,
+        ),
+        Tool(
+            "delete_path",
+            "Permanently delete a file or directory after confirmation.",
+            _schema(path={"type": "string", "_required": True}),
+            _delete_path,
+        ),
+        Tool(
+            "path_info",
+            "Show type, size, and modification time for a path.",
+            _schema(path={"type": "string", "_required": True}),
+            _path_info,
+        ),
+        Tool(
+            "find_files",
+            "Find files/directories by glob pattern under a path.",
+            _schema(
+                pattern={"type": "string", "_required": True},
+                path={"type": "string"},
+                max_results={"type": "integer"},
+            ),
+            _find_files,
         ),
         Tool(
             "run_command",

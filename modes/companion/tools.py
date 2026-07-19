@@ -48,8 +48,12 @@ CATEGORY_TOOLS: dict[str, set[str]] = {
         "grep_search",
         "write_file",
         "patch_file",
+        "create_directory",
+        "copy_path",
         "move_path",
         "trash_path",
+        "path_info",
+        "find_files",
     },
     "system": {
         "run_command",
@@ -65,8 +69,12 @@ CATEGORY_TOOLS: dict[str, set[str]] = {
         "grep_search",
         "run_command",
         "patch_file",
+        "create_directory",
+        "find_files",
+        "path_info",
         "git_status",
         "git_diff",
+        "git_log",
     },
     "reminders": {
         "reminder_add",
@@ -326,10 +334,13 @@ def _register_file_tools(registry: ToolRegistry) -> None:
             else context.safety.check_create(raw_path)
         )
         content = str(args.get("content", ""))
-        if not context.confirm(f"Write file {path}?"):
+        append = bool(args.get("append", False))
+        action = "Append to" if append else "Write"
+        if not context.confirm(f"{action} file {path}?"):
             return _error("cancelled", "User declined write_file.")
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
+        with path.open("a" if append else "w", encoding="utf-8") as handle:
+            handle.write(content)
         return ToolResult(f"Wrote {len(content)} chars to {path}")
 
     def patch_file(context: ToolContext, args: dict[str, Any]) -> ToolResult:
@@ -347,9 +358,47 @@ def _register_file_tools(registry: ToolRegistry) -> None:
         path.write_text(updated, encoding="utf-8")
         return ToolResult(f"Patched {path}")
 
+    def _resolve_destination(context: ToolContext, raw: str | Path) -> Path:
+        path = Path(raw).expanduser()
+        if path.exists():
+            return context.safety.check_write(path)
+        return context.safety.check_create(path)
+
+    def create_directory(context: ToolContext, args: dict[str, Any]) -> ToolResult:
+        raw = Path(args["path"]).expanduser()
+        parents = bool(args.get("parents", True))
+        if raw.exists():
+            path = context.safety.check_write(raw)
+            if path.is_dir():
+                return ToolResult(f"Directory already exists: {path}")
+            return _error("not_directory", f"Path exists and is not a directory: {path}")
+        path = context.safety.check_create(raw)
+        if not context.confirm(f"Create directory {path}?"):
+            return _error("cancelled", "User declined create_directory.")
+        path.mkdir(parents=parents, exist_ok=True)
+        return ToolResult(f"Created directory {path}")
+
+    def copy_path(context: ToolContext, args: dict[str, Any]) -> ToolResult:
+        source = context.safety.check_read(args["source"])
+        destination = _resolve_destination(context, args["destination"])
+        if not source.exists():
+            return _error("missing", f"Source not found: {source}")
+        if not context.confirm(f"Copy {source} → {destination}?"):
+            return _error("cancelled", "User declined copy_path.")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if source.is_dir():
+            shutil.copytree(source, destination, dirs_exist_ok=bool(args.get("overwrite", False)))
+        else:
+            if destination.exists() and destination.is_dir():
+                destination = context.safety.check_write(destination / source.name)
+            shutil.copy2(source, destination)
+        return ToolResult(f"Copied to {destination}")
+
     def move_path(context: ToolContext, args: dict[str, Any]) -> ToolResult:
         source = context.safety.check_write(args["source"])
-        destination = context.safety.check_write(args["destination"])
+        destination = _resolve_destination(context, args["destination"])
+        if not source.exists():
+            return _error("missing", f"Source not found: {source}")
         if not context.confirm(f"Move {source} → {destination}?"):
             return _error("cancelled", "User declined move_path.")
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -358,6 +407,8 @@ def _register_file_tools(registry: ToolRegistry) -> None:
 
     def trash_path(context: ToolContext, args: dict[str, Any]) -> ToolResult:
         path = context.safety.check_write(args["path"])
+        if not path.exists():
+            return _error("missing", f"Path not found: {path}")
         if not context.confirm(f"Trash {path}?"):
             return _error("cancelled", "User declined trash_path.")
         # Best-effort trash; fall back to unlink.
@@ -376,6 +427,47 @@ def _register_file_tools(registry: ToolRegistry) -> None:
         else:
             path.unlink()
         return ToolResult(f"Deleted {path}")
+
+    def path_info(context: ToolContext, args: dict[str, Any]) -> ToolResult:
+        from datetime import datetime
+
+        path = context.safety.check_read(args["path"])
+        if not path.exists():
+            return _error("missing", f"Path not found: {path}")
+        stat = path.stat()
+        kind = "directory" if path.is_dir() else "symlink" if path.is_symlink() else "file"
+        mtime = datetime.fromtimestamp(stat.st_mtime).astimezone().isoformat(timespec="seconds")
+        return ToolResult(
+            "\n".join(
+                (
+                    f"path: {path}",
+                    f"type: {kind}",
+                    f"size: {human_size(stat.st_size)}",
+                    f"modified: {mtime}",
+                    f"mode: {oct(stat.st_mode)[-3:]}",
+                )
+            )
+        )
+
+    def find_files(context: ToolContext, args: dict[str, Any]) -> ToolResult:
+        root = context.safety.check_read(
+            args.get("path", context.config.safety.working_directory)
+        )
+        pattern = str(args.get("pattern", "*")).strip() or "*"
+        max_results = min(max(int(args.get("max_results", 100)), 1), 500)
+        if not root.is_dir():
+            return _error("not_directory", f"Not a directory: {root}")
+        hits: list[str] = []
+        for match in sorted(root.rglob(pattern)):
+            if len(hits) >= max_results:
+                break
+            try:
+                safe = context.safety.check_read(match)
+            except SafetyError:
+                continue
+            suffix = "/" if safe.is_dir() else ""
+            hits.append(f"{safe}{suffix}")
+        return ToolResult(truncate_output("\n".join(hits) or "No matches."))
 
     for name, description, parameters, handler in (
         (
@@ -405,10 +497,11 @@ def _register_file_tools(registry: ToolRegistry) -> None:
         ),
         (
             "write_file",
-            "Write a text file (confirmation required).",
+            "Write or append a text file (confirmation required).",
             _schema(
                 path={"type": "string", "_required": True},
                 content={"type": "string", "_required": True},
+                append={"type": "boolean", "default": False},
             ),
             write_file,
         ),
@@ -424,6 +517,25 @@ def _register_file_tools(registry: ToolRegistry) -> None:
             patch_file,
         ),
         (
+            "create_directory",
+            "Create a directory and parents (confirmation required).",
+            _schema(
+                path={"type": "string", "_required": True},
+                parents={"type": "boolean", "default": True},
+            ),
+            create_directory,
+        ),
+        (
+            "copy_path",
+            "Copy a file or directory (confirmation required).",
+            _schema(
+                source={"type": "string", "_required": True},
+                destination={"type": "string", "_required": True},
+                overwrite={"type": "boolean", "default": False},
+            ),
+            copy_path,
+        ),
+        (
             "move_path",
             "Move or rename a path (confirmation required).",
             _schema(
@@ -437,6 +549,22 @@ def _register_file_tools(registry: ToolRegistry) -> None:
             "Trash or delete a path (confirmation required).",
             _schema(path={"type": "string", "_required": True}),
             trash_path,
+        ),
+        (
+            "path_info",
+            "Show type, size, and modification time for a path.",
+            _schema(path={"type": "string", "_required": True}),
+            path_info,
+        ),
+        (
+            "find_files",
+            "Find files/directories by glob pattern under a path.",
+            _schema(
+                pattern={"type": "string", "_required": True},
+                path={"type": "string"},
+                max_results={"type": "integer", "default": 100},
+            ),
+            find_files,
         ),
     ):
         registry.register(Tool(name, description, parameters, handler))
@@ -570,6 +698,21 @@ def _register_system_tools(registry: ToolRegistry) -> None:
             return _error("git_error", completed.stderr.strip() or "git diff failed")
         return ToolResult(truncate_output(completed.stdout or "(no diff)", 8_000, 200))
 
+    def git_log(context: ToolContext, args: dict[str, Any]) -> ToolResult:
+        root = context.safety.check_read(
+            args.get("path", context.config.safety.working_directory)
+        )
+        limit = min(max(int(args.get("limit", 20)), 1), 100)
+        completed = subprocess.run(
+            ["git", "-C", str(root), "log", f"-{limit}", "--oneline", "--decorate"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if completed.returncode != 0:
+            return _error("git_error", completed.stderr.strip() or "git log failed")
+        return ToolResult(truncate_output(completed.stdout or "(no commits)"))
+
     for name, description, parameters, handler in (
         (
             "run_command",
@@ -609,6 +752,15 @@ def _register_system_tools(registry: ToolRegistry) -> None:
                 staged={"type": "boolean", "default": False},
             ),
             git_diff,
+        ),
+        (
+            "git_log",
+            "Recent git commits (oneline).",
+            _schema(
+                path={"type": "string"},
+                limit={"type": "integer", "default": 20},
+            ),
+            git_log,
         ),
     ):
         registry.register(Tool(name, description, parameters, handler))

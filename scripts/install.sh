@@ -17,9 +17,11 @@ export J_AGENT_STATE_DIR="$STATE_DIR"
 
 BOLD="$(printf '\033[1m')"; CYAN="$(printf '\033[36m')"; GREEN="$(printf '\033[32m')"
 YELLOW="$(printf '\033[33m')"; RED="$(printf '\033[31m')"; RESET="$(printf '\033[0m')"
-info() { printf '%b\n' "${CYAN}$*${RESET}"; }
-ok() { printf '%b\n' "${GREEN}$*${RESET}"; }
-warn() { printf '%b\n' "${YELLOW}$*${RESET}"; }
+# Status messages go to stderr so command substitutions
+# (e.g. source="$(resolve_source …)") capture only data paths.
+info() { printf '%b\n' "${CYAN}$*${RESET}" >&2; }
+ok() { printf '%b\n' "${GREEN}$*${RESET}" >&2; }
+warn() { printf '%b\n' "${YELLOW}$*${RESET}" >&2; }
 fail() { printf '%b\n' "${RED}$*${RESET}" >&2; exit 1; }
 
 OS_TYPE=""
@@ -97,92 +99,100 @@ python_minor_version() {
 }
 
 install_python() {
-  info "Python 3.11+ not found. Attempting to install system Python…"
-  case "$OS_TYPE" in
-    darwin)
-      if command -v brew >/dev/null 2>&1; then
-        brew install python@3.12 || brew install python3
-        return 0
-      fi
-      fail "Python 3.11+ is required. Install Homebrew (https://brew.sh) and re-run, or install Python from https://www.python.org/downloads/macos/"
-      ;;
-    debian)
-      run_privileged apt-get update -qq
-      run_privileged apt-get install -y python3 python3-venv python3-pip
-      ;;
-    fedora)
-      run_privileged dnf install -y python3 python3-pip
-      ;;
-    arch)
-      run_privileged pacman -Sy --noconfirm python python-pip
-      ;;
-    *)
-      fail "Python 3.11+ is required. Install python3 for your OS, then re-run this script."
-      ;;
-  esac
+  # Package manager stdout must not leak into python="$(pick_python)".
+  {
+    info "Python 3.11+ not found. Attempting to install system Python…"
+    case "$OS_TYPE" in
+      darwin)
+        if command -v brew >/dev/null 2>&1; then
+          brew install python@3.12 || brew install python3
+          return 0
+        fi
+        fail "Python 3.11+ is required. Install Homebrew (https://brew.sh) and re-run, or install Python from https://www.python.org/downloads/macos/"
+        ;;
+      debian)
+        run_privileged apt-get update -qq
+        run_privileged apt-get install -y python3 python3-venv python3-pip
+        ;;
+      fedora)
+        run_privileged dnf install -y python3 python3-pip
+        ;;
+      arch)
+        run_privileged pacman -Sy --noconfirm python python-pip
+        ;;
+      *)
+        fail "Python 3.11+ is required. Install python3 for your OS, then re-run this script."
+        ;;
+    esac
+  } >&2
 }
 
 ensure_git() {
-  detect_os
-  if command -v git >/dev/null 2>&1; then
-    return 0
-  fi
-  info "git not found. Installing git (may ask for sudo)…"
-  case "$OS_TYPE" in
-    darwin)
-      if command -v brew >/dev/null 2>&1; then
-        brew install git
-      else
-        # Triggers Xcode CLT installer on macOS when available.
-        xcode-select --install 2>/dev/null || true
-        fail "Install git (or Xcode Command Line Tools), then re-run this script."
-      fi
-      ;;
-    debian)
-      run_privileged apt-get update -qq
-      run_privileged apt-get install -y git
-      ;;
-    fedora)
-      run_privileged dnf install -y git
-      ;;
-    arch)
-      run_privileged pacman -Sy --noconfirm git
-      ;;
-    *)
-      fail "git is required. Install git for your OS, then re-run this script."
-      ;;
-  esac
-  command -v git >/dev/null 2>&1 || fail "git was installed but is not on PATH. Open a new terminal and re-run."
+  # Status + apt/brew output must not leak into source="$(resolve_source …)".
+  {
+    detect_os
+    if command -v git >/dev/null 2>&1; then
+      return 0
+    fi
+    info "git not found. Installing git (may ask for sudo)…"
+    case "$OS_TYPE" in
+      darwin)
+        if command -v brew >/dev/null 2>&1; then
+          brew install git
+        else
+          # Triggers Xcode CLT installer on macOS when available.
+          xcode-select --install 2>/dev/null || true
+          fail "Install git (or Xcode Command Line Tools), then re-run this script."
+        fi
+        ;;
+      debian)
+        run_privileged apt-get update -qq
+        run_privileged apt-get install -y git
+        ;;
+      fedora)
+        run_privileged dnf install -y git
+        ;;
+      arch)
+        run_privileged pacman -Sy --noconfirm git
+        ;;
+      *)
+        fail "git is required. Install git for your OS, then re-run this script."
+        ;;
+    esac
+    command -v git >/dev/null 2>&1 || fail "git was installed but is not on PATH. Open a new terminal and re-run."
+  } >&2
 }
 
 install_venv_packages() {
   local python="$1"
   local ver
   ver="$(python_minor_version "$python")"
-  info "Installing venv support for Python ${ver} (may ask for sudo)…"
-  case "$OS_TYPE" in
-    debian)
-      run_privileged apt-get update -qq
-      # Version-specific first (e.g. python3.14-venv), then meta packages.
-      run_privileged apt-get install -y \
-        "python${ver}-venv" \
-        "python${ver}-full" \
-        python3-venv \
-        python3-pip \
-        2>/dev/null || run_privileged apt-get install -y python3-venv python3-pip
-      ;;
-    fedora)
-      run_privileged dnf install -y python3-devel python3-pip
-      ;;
-    darwin)
-      if command -v brew >/dev/null 2>&1; then
-        brew install "python@${ver}" 2>/dev/null || brew install python@3.12 || brew reinstall python3
-      fi
-      ;;
-    arch)
-      run_privileged pacman -Sy --noconfirm python python-pip
-      ;;
-  esac
+  {
+    info "Installing venv support for Python ${ver} (may ask for sudo)…"
+    case "$OS_TYPE" in
+      debian)
+        run_privileged apt-get update -qq
+        # Version-specific first (e.g. python3.14-venv), then meta packages.
+        run_privileged apt-get install -y \
+          "python${ver}-venv" \
+          "python${ver}-full" \
+          python3-venv \
+          python3-pip \
+          2>/dev/null || run_privileged apt-get install -y python3-venv python3-pip
+        ;;
+      fedora)
+        run_privileged dnf install -y python3-devel python3-pip
+        ;;
+      darwin)
+        if command -v brew >/dev/null 2>&1; then
+          brew install "python@${ver}" 2>/dev/null || brew install python@3.12 || brew reinstall python3
+        fi
+        ;;
+      arch)
+        run_privileged pacman -Sy --noconfirm python python-pip
+        ;;
+    esac
+  } >&2
 }
 
 venv_python_bin() {
@@ -361,10 +371,13 @@ resolve_source() {
     git -C "$source" fetch --depth 1 origin "$REPO_BRANCH" >&2
     git -C "$source" -c advice.detachedHead=false checkout -f FETCH_HEAD >&2
   else
+    # Remove a leftover non-git tree from a failed previous install.
+    rm -rf "$source"
     git -c advice.detachedHead=false clone --depth 1 --branch "$REPO_BRANCH" \
       "$REPO_URL" "$source" >&2
   fi
   prune_other_modes "$mode" "$source"
+  [[ -f "$source/pyproject.toml" ]] || fail "Clone completed but pyproject.toml is missing in $source"
   printf '%s' "$source"
 }
 
@@ -409,9 +422,13 @@ remove_legacy_ka() {
 
 install_mode() {
   local mode="$1" label="$2"
-  local source python venv_py
-  source="$(resolve_source "$mode")"
+  local src_dir python venv_py
+  src_dir="$(resolve_source "$mode")"
+  # Guard against status text leaking into the path (stdout pollution).
+  [[ "$src_dir" == /* && -d "$src_dir" && -f "$src_dir/pyproject.toml" ]] || \
+    fail "Invalid source path from resolve_source: ${src_dir:-<empty>}"
   python="$(pick_python)"
+  [[ -n "$python" && -x "$python" ]] || fail "Invalid Python interpreter: ${python:-<empty>}"
   info "\nInstalling J ${label} into $INSTALL_DIR"
   mkdir -p "$INSTALL_DIR" "$BIN_DIR" "$STATE_DIR"
   chmod 700 "$STATE_DIR"
@@ -423,7 +440,7 @@ install_mode() {
   "$venv_py" -m pip install --upgrade pip >/dev/null
   # Mode selection is done by this script (prune + manifest). pip only installs
   # the pruned tree (core + shared router + the chosen mode) and dependencies.
-  "$venv_py" -m pip install "$source"
+  "$venv_py" -m pip install "$src_dir"
   ln -sfn "$VENV_DIR/bin/agent" "$BIN_DIR/agent"
   ln -sfn "$VENV_DIR/bin/ja" "$BIN_DIR/ja"
   remove_legacy_ka
