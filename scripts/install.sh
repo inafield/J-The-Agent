@@ -80,8 +80,12 @@ resolve_python_path() {
     printf '%s' "$candidate"
     return 0
   fi
-  resolved="$(command -v "$candidate" 2>/dev/null || true)"
-  [[ -n "$resolved" && -x "$resolved" ]] || return 1
+  # type -P returns only disk binaries (ignores aliases/functions).
+  resolved="$(type -P "$candidate" 2>/dev/null || true)"
+  if [[ -z "$resolved" ]]; then
+    resolved="$(command -v "$candidate" 2>/dev/null || true)"
+  fi
+  [[ -n "$resolved" && "$resolved" == /* && -x "$resolved" ]] || return 1
   printf '%s' "$resolved"
 }
 
@@ -531,6 +535,34 @@ greet() {
 ${RESET}        Modular personal & server intelligence"
 }
 
+# raw.githubusercontent.com is often CDN-cached. When this file is launched via
+# curl/process substitution (no real checkout), re-exec the install.sh from a
+# fresh git clone so users never run a stale installer.
+reexec_from_git_clone() {
+  local script_dir project_dir boot_dir
+  [[ "${J_AGENT_BOOTSTRAPPED:-}" == "1" ]] && return 0
+
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || true)"
+  project_dir="$(cd "$script_dir/.." 2>/dev/null && pwd || true)"
+  if [[ -f "$project_dir/pyproject.toml" && -d "$project_dir/core" && -d "$project_dir/modes" ]]; then
+    # Already running from a real project tree (local clone or previous bootstrap).
+    return 0
+  fi
+
+  ensure_git
+  boot_dir="$INSTALL_DIR/.bootstrap"
+  info "Fetching latest installer from GitHub (avoids stale curl cache)…"
+  mkdir -p "$INSTALL_DIR"
+  rm -rf "$boot_dir"
+  git -c advice.detachedHead=false clone --depth 1 --branch "$REPO_BRANCH" \
+    "$REPO_URL" "$boot_dir" >&2
+  [[ -f "$boot_dir/scripts/install.sh" ]] || \
+    fail "Bootstrap clone is missing scripts/install.sh"
+  export J_AGENT_BOOTSTRAPPED=1
+  export J_AGENT_HOME="$INSTALL_DIR"
+  exec bash "$boot_dir/scripts/install.sh" "$@"
+}
+
 main() {
   if [[ "${1:-}" == "uninstall" || "${1:-}" == "--uninstall" ]]; then
     if [[ "${2:-}" == "--purge" ]]; then
@@ -541,8 +573,9 @@ main() {
     return
   fi
   if [[ ! -t 0 ]]; then
-    fail "Interactive input requires a terminal. Use: bash <(curl -fsSL RAW_INSTALL_URL)"
+    fail "Interactive input requires a terminal. Use: bash <(curl -fsSL …) or clone + ./scripts/install.sh"
   fi
+  reexec_from_git_clone "$@"
   greet
   local choice
   choice="$(arrow_menu "Choose one mode to install (↑/↓, Enter):" \

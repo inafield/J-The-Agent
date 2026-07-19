@@ -18,11 +18,14 @@ Manager будет добавлен позже как ещё один незав
 ./scripts/install.sh
 ```
 
-С GitHub:
+С GitHub (пользователю клонировать репозиторий не нужно):
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/inafield/J-The-Agent/main/scripts/install.sh)
+bash <(curl -fsSL "https://raw.githubusercontent.com/inafield/J-The-Agent/main/scripts/install.sh?$(date +%s)")
 ```
+
+Параметр `?$(date +%s)` обходит кэш CDN у `raw.githubusercontent.com`.
+Скрипт сам скачает нужные файлы через git и поставит только выбранный режим.
 
 Скрипт предлагает стрелками выбрать Quick или Companion (Manager пока
 недоступен), затем:
