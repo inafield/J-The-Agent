@@ -22,6 +22,187 @@ ok() { printf '%b\n' "${GREEN}$*${RESET}"; }
 warn() { printf '%b\n' "${YELLOW}$*${RESET}"; }
 fail() { printf '%b\n' "${RED}$*${RESET}" >&2; exit 1; }
 
+OS_TYPE=""
+
+detect_os() {
+  case "$(uname -s)" in
+    Darwin) OS_TYPE="darwin" ;;
+    Linux)
+      if [[ -f /etc/debian_version ]] || grep -qiE 'debian|ubuntu' /etc/os-release 2>/dev/null; then
+        OS_TYPE="debian"
+      elif [[ -f /etc/fedora-release ]] || grep -qi fedora /etc/os-release 2>/dev/null; then
+        OS_TYPE="fedora"
+      elif grep -qiE 'arch|manjaro' /etc/os-release 2>/dev/null; then
+        OS_TYPE="arch"
+      else
+        OS_TYPE="linux"
+      fi
+      ;;
+    *) OS_TYPE="unknown" ;;
+  esac
+}
+
+run_privileged() {
+  if [[ "$(id -u)" -eq 0 ]]; then
+    "$@"
+  elif command -v sudo >/dev/null 2>&1; then
+    info "Running (sudo): $*"
+    sudo "$@"
+  else
+    fail "Need root or sudo to install system packages: $*"
+  fi
+}
+
+python_candidates() {
+  local candidate homebrew
+  for candidate in python3.13 python3.12 python3.11 python3; do
+    printf '%s\n' "$candidate"
+  done
+  if [[ "$OS_TYPE" == "darwin" ]] && command -v brew >/dev/null 2>&1; then
+    for homebrew in \
+      "$(brew --prefix python@3.13 2>/dev/null)/bin/python3.13" \
+      "$(brew --prefix python@3.12 2>/dev/null)/bin/python3.12" \
+      "$(brew --prefix python@3.11 2>/dev/null)/bin/python3.11" \
+      "$(brew --prefix python3 2>/dev/null)/bin/python3"; do
+      [[ -n "$homebrew" && -x "$homebrew" ]] && printf '%s\n' "$homebrew"
+    done
+  fi
+}
+
+python_is_suitable() {
+  local candidate="$1" resolved=""
+  if [[ "$candidate" != */* ]]; then
+    resolved="$(command -v "$candidate" 2>/dev/null || true)"
+    [[ -n "$resolved" ]] || return 1
+    candidate="$resolved"
+  fi
+  [[ -x "$candidate" ]] || return 1
+  "$candidate" -c 'import sys; print(sys.version_info >= (3, 11))' 2>/dev/null | grep -q True
+}
+
+find_python() {
+  local candidate
+  while IFS= read -r candidate; do
+    if python_is_suitable "$candidate"; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done < <(python_candidates | awk '!seen[$0]++')
+  return 1
+}
+
+python_minor_version() {
+  local python="$1"
+  "$python" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")'
+}
+
+install_python() {
+  info "Python 3.11+ not found. Attempting to install system Python…"
+  case "$OS_TYPE" in
+    darwin)
+      if command -v brew >/dev/null 2>&1; then
+        brew install python@3.12 || brew install python3
+        return 0
+      fi
+      fail "Python 3.11+ is required. Install Homebrew (https://brew.sh) and re-run, or install Python from https://www.python.org/downloads/macos/"
+      ;;
+    debian)
+      run_privileged apt-get update -qq
+      run_privileged apt-get install -y python3 python3-venv python3-pip
+      ;;
+    fedora)
+      run_privileged dnf install -y python3 python3-pip
+      ;;
+    arch)
+      run_privileged pacman -Sy --noconfirm python python-pip
+      ;;
+    *)
+      fail "Python 3.11+ is required. Install python3 for your OS, then re-run this script."
+      ;;
+  esac
+}
+
+install_venv_packages() {
+  local python="$1"
+  local ver
+  ver="$(python_minor_version "$python")"
+  info "Installing venv support for Python ${ver} (may ask for sudo)…"
+  case "$OS_TYPE" in
+    debian)
+      run_privileged apt-get update -qq
+      if ! run_privileged apt-get install -y "python${ver}-venv" python3-pip; then
+        run_privileged apt-get install -y python3-venv python3-pip
+      fi
+      ;;
+    fedora)
+      run_privileged dnf install -y python3-devel
+      ;;
+    darwin)
+      if command -v brew >/dev/null 2>&1; then
+        brew install "python@${ver}" 2>/dev/null || brew install python@3.12 || brew reinstall python3
+      fi
+      ;;
+    arch)
+      run_privileged pacman -Sy --noconfirm python
+      ;;
+  esac
+}
+
+venv_probe() {
+  local python="$1"
+  local test_dir=""
+  test_dir="$(mktemp -d "${TMPDIR:-/tmp}/j-agent-venv.XXXXXX")"
+  if "$python" -m venv "$test_dir" >/dev/null 2>&1 && [[ -x "$test_dir/bin/python" ]]; then
+    rm -rf "$test_dir"
+    return 0
+  fi
+  rm -rf "$test_dir"
+  test_dir="$(mktemp -d "${TMPDIR:-/tmp}/j-agent-venv.XXXXXX")"
+  if "$python" -m venv --without-pip "$test_dir" >/dev/null 2>&1 && [[ -x "$test_dir/bin/python" ]]; then
+    rm -rf "$test_dir"
+    return 0
+  fi
+  rm -rf "$test_dir"
+  return 1
+}
+
+ensure_venv_support() {
+  local python="$1"
+  if venv_probe "$python"; then
+    return 0
+  fi
+  install_venv_packages "$python"
+  if venv_probe "$python"; then
+    return 0
+  fi
+  fail "Could not enable Python venv for $python. On Debian/Ubuntu try: sudo apt install python3-venv"
+}
+
+create_venv() {
+  local python="$1"
+  rm -rf "$VENV_DIR"
+  ensure_venv_support "$python"
+  if "$python" -m venv --clear "$VENV_DIR" 2>/dev/null; then
+    return 0
+  fi
+  warn "ensurepip unavailable — creating venv without pip, then bootstrapping…"
+  "$python" -m venv --clear --without-pip "$VENV_DIR"
+  curl -fsSL https://bootstrap.pypa.io/get-pip.py | "$VENV_DIR/bin/python" - >/dev/null
+}
+
+pick_python() {
+  detect_os
+  local python=""
+  python="$(find_python || true)"
+  if [[ -z "$python" ]]; then
+    install_python
+    python="$(find_python || true)"
+  fi
+  [[ -n "$python" ]] || fail "Python 3.11+ is required but was not found after installation."
+  ensure_venv_support "$python"
+  printf '%s' "$python"
+}
+
 arrow_menu() {
   local prompt="$1"; shift
   local options=("$@") selected=0 key i
@@ -48,20 +229,6 @@ arrow_menu() {
     printf '\033[%dA' "${#options[@]}" >&2
   done
   printf '%d' "$selected"
-}
-
-pick_python() {
-  local candidate version
-  for candidate in python3.13 python3.12 python3.11 python3; do
-    if command -v "$candidate" >/dev/null 2>&1; then
-      version="$("$candidate" -c 'import sys; print(sys.version_info >= (3, 11))')"
-      if [[ "$version" == "True" ]]; then
-        printf '%s' "$candidate"
-        return
-      fi
-    fi
-  done
-  fail "Python 3.11+ is required. Existing Python installations are never modified."
 }
 
 resolve_source() {
@@ -153,7 +320,7 @@ install_mode() {
   chmod 700 "$STATE_DIR"
   touch "$HISTORY_PATH"
   chmod 600 "$HISTORY_PATH"
-  "$python" -m venv --clear "$VENV_DIR"
+  create_venv "$python"
   "$VENV_DIR/bin/python" -m pip install --upgrade pip >/dev/null
   # Mode selection is done by this script (prune + manifest). pip only installs
   # the pruned tree (core + shared router + the chosen mode) and dependencies.
