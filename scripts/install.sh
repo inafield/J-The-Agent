@@ -130,12 +130,16 @@ install_venv_packages() {
   case "$OS_TYPE" in
     debian)
       run_privileged apt-get update -qq
-      if ! run_privileged apt-get install -y "python${ver}-venv" python3-pip; then
-        run_privileged apt-get install -y python3-venv python3-pip
-      fi
+      # Version-specific first (e.g. python3.14-venv), then meta packages.
+      run_privileged apt-get install -y \
+        "python${ver}-venv" \
+        "python${ver}-full" \
+        python3-venv \
+        python3-pip \
+        2>/dev/null || run_privileged apt-get install -y python3-venv python3-pip
       ;;
     fedora)
-      run_privileged dnf install -y python3-devel
+      run_privileged dnf install -y python3-devel python3-pip
       ;;
     darwin)
       if command -v brew >/dev/null 2>&1; then
@@ -143,24 +147,50 @@ install_venv_packages() {
       fi
       ;;
     arch)
-      run_privileged pacman -Sy --noconfirm python
+      run_privileged pacman -Sy --noconfirm python python-pip
       ;;
   esac
 }
 
+venv_python_bin() {
+  local root="$1"
+  if [[ -x "$root/bin/python" ]]; then
+    printf '%s' "$root/bin/python"
+  elif [[ -x "$root/bin/python3" ]]; then
+    printf '%s' "$root/bin/python3"
+  else
+    return 1
+  fi
+}
+
+ensurepip_available() {
+  local python="$1"
+  "$python" -c "import ensurepip" >/dev/null 2>&1
+}
+
+venv_module_available() {
+  local python="$1"
+  "$python" -c "import venv" >/dev/null 2>&1
+}
+
 venv_probe() {
   local python="$1"
-  local test_dir=""
-  test_dir="$(mktemp -d "${TMPDIR:-/tmp}/j-agent-venv.XXXXXX")"
-  if "$python" -m venv "$test_dir" >/dev/null 2>&1 && [[ -x "$test_dir/bin/python" ]]; then
-    rm -rf "$test_dir"
-    return 0
+  local test_dir="" flags="" py=""
+  if ! venv_module_available "$python"; then
+    return 1
   fi
-  rm -rf "$test_dir"
+  if ensurepip_available "$python"; then
+    flags=()
+  else
+    flags=(--without-pip)
+  fi
   test_dir="$(mktemp -d "${TMPDIR:-/tmp}/j-agent-venv.XXXXXX")"
-  if "$python" -m venv --without-pip "$test_dir" >/dev/null 2>&1 && [[ -x "$test_dir/bin/python" ]]; then
-    rm -rf "$test_dir"
-    return 0
+  if "$python" -m venv "${flags[@]}" "$test_dir" >/dev/null 2>&1; then
+    py="$(venv_python_bin "$test_dir" || true)"
+    if [[ -n "$py" ]]; then
+      rm -rf "$test_dir"
+      return 0
+    fi
   fi
   rm -rf "$test_dir"
   return 1
@@ -168,6 +198,12 @@ venv_probe() {
 
 ensure_venv_support() {
   local python="$1"
+  detect_os
+  if ! venv_module_available "$python"; then
+    install_venv_packages "$python"
+  elif ! ensurepip_available "$python" && [[ "$OS_TYPE" == "debian" ]]; then
+    install_venv_packages "$python"
+  fi
   if venv_probe "$python"; then
     return 0
   fi
@@ -175,19 +211,47 @@ ensure_venv_support() {
   if venv_probe "$python"; then
     return 0
   fi
-  fail "Could not enable Python venv for $python. On Debian/Ubuntu try: sudo apt install python3-venv"
+  # Last resort: venv module exists but OS packages missing — --without-pip may still work.
+  if venv_module_available "$python"; then
+    return 0
+  fi
+  fail "Could not enable Python venv for $python. On Debian/Ubuntu run: sudo apt install python3-venv"
+}
+
+bootstrap_pip() {
+  local py="$1"
+  if "$py" -m pip --version >/dev/null 2>&1; then
+    return 0
+  fi
+  info "Bootstrapping pip into the virtual environment…"
+  curl -fsSL https://bootstrap.pypa.io/get-pip.py | "$py" - || \
+    fail "Could not bootstrap pip. Check network access and retry."
 }
 
 create_venv() {
-  local python="$1"
+  local python="$1" py="" flags=()
   rm -rf "$VENV_DIR"
   ensure_venv_support "$python"
-  if "$python" -m venv --clear "$VENV_DIR" 2>/dev/null; then
-    return 0
+  if ensurepip_available "$python"; then
+    if ! "$python" -m venv --clear "$VENV_DIR" 2>/dev/null; then
+      warn "venv with ensurepip failed — retrying without bundled pip…"
+      flags=(--without-pip)
+    fi
+  else
+    warn "ensurepip not available — creating venv without bundled pip…"
+    flags=(--without-pip)
   fi
-  warn "ensurepip unavailable — creating venv without pip, then bootstrapping…"
-  "$python" -m venv --clear --without-pip "$VENV_DIR"
-  curl -fsSL https://bootstrap.pypa.io/get-pip.py | "$VENV_DIR/bin/python" - >/dev/null
+  if [[ ${#flags[@]} -gt 0 ]]; then
+    if ! "$python" -m venv --clear "${flags[@]}" "$VENV_DIR"; then
+      install_venv_packages "$python"
+      "$python" -m venv --clear "${flags[@]}" "$VENV_DIR" || \
+        fail "Could not create virtual environment with $python. Try: sudo apt install python3-venv"
+    fi
+    py="$(venv_python_bin "$VENV_DIR")"
+    bootstrap_pip "$py"
+  fi
+  py="$(venv_python_bin "$VENV_DIR" || true)"
+  [[ -n "$py" ]] || fail "Virtual environment is missing python at $VENV_DIR/bin/python"
 }
 
 pick_python() {
@@ -199,7 +263,6 @@ pick_python() {
     python="$(find_python || true)"
   fi
   [[ -n "$python" ]] || fail "Python 3.11+ is required but was not found after installation."
-  ensure_venv_support "$python"
   printf '%s' "$python"
 }
 
@@ -312,7 +375,7 @@ remove_legacy_ka() {
 
 install_mode() {
   local mode="$1" label="$2"
-  local source python
+  local source python venv_py
   source="$(resolve_source "$mode")"
   python="$(pick_python)"
   info "\nInstalling J ${label} into $INSTALL_DIR"
@@ -321,10 +384,12 @@ install_mode() {
   touch "$HISTORY_PATH"
   chmod 600 "$HISTORY_PATH"
   create_venv "$python"
-  "$VENV_DIR/bin/python" -m pip install --upgrade pip >/dev/null
+  venv_py="$(venv_python_bin "$VENV_DIR")"
+  "$venv_py" -m pip install --upgrade pip >/dev/null 2>&1 || bootstrap_pip "$venv_py"
+  "$venv_py" -m pip install --upgrade pip >/dev/null
   # Mode selection is done by this script (prune + manifest). pip only installs
   # the pruned tree (core + shared router + the chosen mode) and dependencies.
-  "$VENV_DIR/bin/pip" install "$source"
+  "$venv_py" -m pip install "$source"
   ln -sfn "$VENV_DIR/bin/agent" "$BIN_DIR/agent"
   ln -sfn "$VENV_DIR/bin/ja" "$BIN_DIR/ja"
   remove_legacy_ka
