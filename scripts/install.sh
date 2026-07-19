@@ -2,7 +2,7 @@
 # J the Agent installer — suitable for a checkout or a GitHub curl invocation.
 set -euo pipefail
 
-REPO_URL="${J_AGENT_REPO_URL:-https://github.com/inafield/J_The_Agent.git}"
+REPO_URL="${J_AGENT_REPO_URL:-https://github.com/inafield/J-The-Agent.git}"
 REPO_BRANCH="${J_AGENT_REPO_BRANCH:-main}"
 INSTALL_DIR="${J_AGENT_HOME:-$HOME/.local/share/j-the-agent}"
 BIN_DIR="${J_AGENT_BIN_DIR:-$HOME/.local/bin}"

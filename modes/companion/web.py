@@ -12,7 +12,7 @@ from typing import Any
 
 from modes.companion.settings import CompanionSettings, WebSearchProvider
 
-_USER_AGENT = "J-the-Agent/0.4 (+https://github.com/inafield/J_The_Agent)"
+_USER_AGENT = "J-the-Agent/0.4 (+https://github.com/inafield/J-The-Agent)"
 
 
 class _TextExtractor(HTMLParser):

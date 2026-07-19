@@ -21,7 +21,7 @@ Manager будет добавлен позже как ещё один незав
 С GitHub:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/inafield/J_The_Agent/main/scripts/install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/inafield/J-The-Agent/main/scripts/install.sh)
 ```
 
 Скрипт предлагает стрелками выбрать Quick или Companion (Manager пока
