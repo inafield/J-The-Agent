@@ -57,11 +57,12 @@ run_privileged() {
 
 python_candidates() {
   local candidate homebrew
-  for candidate in python3.13 python3.12 python3.11 python3; do
+  for candidate in python3.14 python3.13 python3.12 python3.11 python3; do
     printf '%s\n' "$candidate"
   done
   if [[ "$OS_TYPE" == "darwin" ]] && command -v brew >/dev/null 2>&1; then
     for homebrew in \
+      "$(brew --prefix python@3.14 2>/dev/null)/bin/python3.14" \
       "$(brew --prefix python@3.13 2>/dev/null)/bin/python3.13" \
       "$(brew --prefix python@3.12 2>/dev/null)/bin/python3.12" \
       "$(brew --prefix python@3.11 2>/dev/null)/bin/python3.11" \
@@ -71,22 +72,31 @@ python_candidates() {
   fi
 }
 
+# Resolve a bare command name (python3) or path to an absolute executable.
+resolve_python_path() {
+  local candidate="$1" resolved=""
+  if [[ "$candidate" == */* ]]; then
+    [[ -x "$candidate" ]] || return 1
+    printf '%s' "$candidate"
+    return 0
+  fi
+  resolved="$(command -v "$candidate" 2>/dev/null || true)"
+  [[ -n "$resolved" && -x "$resolved" ]] || return 1
+  printf '%s' "$resolved"
+}
+
 python_is_suitable() {
   local candidate="$1" resolved=""
-  if [[ "$candidate" != */* ]]; then
-    resolved="$(command -v "$candidate" 2>/dev/null || true)"
-    [[ -n "$resolved" ]] || return 1
-    candidate="$resolved"
-  fi
-  [[ -x "$candidate" ]] || return 1
-  "$candidate" -c 'import sys; print(sys.version_info >= (3, 11))' 2>/dev/null | grep -q True
+  resolved="$(resolve_python_path "$candidate")" || return 1
+  "$resolved" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null
 }
 
 find_python() {
-  local candidate
+  local candidate resolved
   while IFS= read -r candidate; do
     if python_is_suitable "$candidate"; then
-      printf '%s' "$candidate"
+      resolved="$(resolve_python_path "$candidate")" || continue
+      printf '%s' "$resolved"
       return 0
     fi
   done < <(python_candidates | awk '!seen[$0]++')
@@ -98,101 +108,104 @@ python_minor_version() {
   "$python" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")'
 }
 
+# Run a command with stdout on stderr so it cannot pollute $(…).
+run_visible() {
+  "$@" >&2
+}
+
 install_python() {
-  # Package manager stdout must not leak into python="$(pick_python)".
-  {
-    info "Python 3.11+ not found. Attempting to install system Python…"
-    case "$OS_TYPE" in
-      darwin)
-        if command -v brew >/dev/null 2>&1; then
-          brew install python@3.12 || brew install python3
-          return 0
-        fi
-        fail "Python 3.11+ is required. Install Homebrew (https://brew.sh) and re-run, or install Python from https://www.python.org/downloads/macos/"
-        ;;
-      debian)
-        run_privileged apt-get update -qq
-        run_privileged apt-get install -y python3 python3-venv python3-pip
-        ;;
-      fedora)
-        run_privileged dnf install -y python3 python3-pip
-        ;;
-      arch)
-        run_privileged pacman -Sy --noconfirm python python-pip
-        ;;
-      *)
-        fail "Python 3.11+ is required. Install python3 for your OS, then re-run this script."
-        ;;
-    esac
-  } >&2
+  info "Python 3.11+ not found. Attempting to install system Python…"
+  case "$OS_TYPE" in
+    darwin)
+      if command -v brew >/dev/null 2>&1; then
+        run_visible brew install python@3.12 || run_visible brew install python3
+        return 0
+      fi
+      fail "Python 3.11+ is required. Install Homebrew (https://brew.sh) and re-run, or install Python from https://www.python.org/downloads/macos/"
+      ;;
+    debian)
+      run_visible run_privileged apt-get update -qq
+      run_visible run_privileged apt-get install -y python3 python3-venv python3-pip
+      ;;
+    fedora)
+      run_visible run_privileged dnf install -y python3 python3-pip
+      ;;
+    arch)
+      run_visible run_privileged pacman -Sy --noconfirm python python-pip
+      ;;
+    *)
+      fail "Python 3.11+ is required. Install python3 for your OS, then re-run this script."
+      ;;
+  esac
 }
 
 ensure_git() {
-  # Status + apt/brew output must not leak into source="$(resolve_source …)".
-  {
-    detect_os
-    if command -v git >/dev/null 2>&1; then
-      return 0
-    fi
-    info "git not found. Installing git (may ask for sudo)…"
-    case "$OS_TYPE" in
-      darwin)
-        if command -v brew >/dev/null 2>&1; then
-          brew install git
-        else
-          # Triggers Xcode CLT installer on macOS when available.
-          xcode-select --install 2>/dev/null || true
-          fail "Install git (or Xcode Command Line Tools), then re-run this script."
-        fi
-        ;;
-      debian)
-        run_privileged apt-get update -qq
-        run_privileged apt-get install -y git
-        ;;
-      fedora)
-        run_privileged dnf install -y git
-        ;;
-      arch)
-        run_privileged pacman -Sy --noconfirm git
-        ;;
-      *)
-        fail "git is required. Install git for your OS, then re-run this script."
-        ;;
-    esac
-    command -v git >/dev/null 2>&1 || fail "git was installed but is not on PATH. Open a new terminal and re-run."
-  } >&2
+  detect_os
+  # Prefer a real binary on PATH; hash -r after package install below.
+  if command -v git >/dev/null 2>&1; then
+    return 0
+  fi
+  info "git not found. Installing git (may ask for sudo)…"
+  case "$OS_TYPE" in
+    darwin)
+      if command -v brew >/dev/null 2>&1; then
+        run_visible brew install git
+      else
+        # Triggers Xcode CLT installer on macOS when available.
+        xcode-select --install 2>/dev/null || true
+        fail "Install git (or Xcode Command Line Tools), then re-run this script."
+      fi
+      ;;
+    debian)
+      run_visible run_privileged apt-get update -qq
+      run_visible run_privileged apt-get install -y git
+      ;;
+    fedora)
+      run_visible run_privileged dnf install -y git
+      ;;
+    arch)
+      run_visible run_privileged pacman -Sy --noconfirm git
+      ;;
+    *)
+      fail "git is required. Install git for your OS, then re-run this script."
+      ;;
+  esac
+  hash -r 2>/dev/null || true
+  command -v git >/dev/null 2>&1 || fail "git was installed but is not on PATH. Open a new terminal and re-run."
 }
 
 install_venv_packages() {
   local python="$1"
   local ver
   ver="$(python_minor_version "$python")"
-  {
-    info "Installing venv support for Python ${ver} (may ask for sudo)…"
-    case "$OS_TYPE" in
-      debian)
-        run_privileged apt-get update -qq
-        # Version-specific first (e.g. python3.14-venv), then meta packages.
-        run_privileged apt-get install -y \
+  info "Installing venv support for Python ${ver} (may ask for sudo)…"
+  case "$OS_TYPE" in
+    debian)
+      run_visible run_privileged apt-get update -qq
+      # Version-specific first (e.g. python3.14-venv), then meta packages.
+      if ! run_visible run_privileged apt-get install -y \
           "python${ver}-venv" \
           "python${ver}-full" \
           python3-venv \
-          python3-pip \
-          2>/dev/null || run_privileged apt-get install -y python3-venv python3-pip
-        ;;
-      fedora)
-        run_privileged dnf install -y python3-devel python3-pip
-        ;;
-      darwin)
-        if command -v brew >/dev/null 2>&1; then
-          brew install "python@${ver}" 2>/dev/null || brew install python@3.12 || brew reinstall python3
-        fi
-        ;;
-      arch)
-        run_privileged pacman -Sy --noconfirm python python-pip
-        ;;
-    esac
-  } >&2
+          python3-pip; then
+        run_visible run_privileged apt-get install -y python3-venv python3-pip
+      fi
+      ;;
+    fedora)
+      run_visible run_privileged dnf install -y python3-devel python3-pip
+      ;;
+    darwin)
+      if command -v brew >/dev/null 2>&1; then
+        run_visible brew install "python@${ver}" \
+          || run_visible brew install python@3.12 \
+          || run_visible brew reinstall python3
+      fi
+      ;;
+    arch)
+      run_visible run_privileged pacman -Sy --noconfirm python python-pip
+      ;;
+  esac
+  hash -r 2>/dev/null || true
 }
 
 venv_python_bin() {
@@ -303,9 +316,11 @@ pick_python() {
   python="$(find_python || true)"
   if [[ -z "$python" ]]; then
     install_python
+    hash -r 2>/dev/null || true
     python="$(find_python || true)"
   fi
-  [[ -n "$python" ]] || fail "Python 3.11+ is required but was not found after installation."
+  [[ -n "$python" && -x "$python" ]] || \
+    fail "Python 3.11+ is required but was not found after installation."
   printf '%s' "$python"
 }
 
@@ -428,7 +443,7 @@ install_mode() {
   [[ "$src_dir" == /* && -d "$src_dir" && -f "$src_dir/pyproject.toml" ]] || \
     fail "Invalid source path from resolve_source: ${src_dir:-<empty>}"
   python="$(pick_python)"
-  [[ -n "$python" && -x "$python" ]] || fail "Invalid Python interpreter: ${python:-<empty>}"
+  info "Using Python: $python"
   info "\nInstalling J ${label} into $INSTALL_DIR"
   mkdir -p "$INSTALL_DIR" "$BIN_DIR" "$STATE_DIR"
   chmod 700 "$STATE_DIR"
