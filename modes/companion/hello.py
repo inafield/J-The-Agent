@@ -41,12 +41,8 @@ FIELD_LABELS: dict[str, str] = {
     "user_name": "Your name",
     "agent_name": "Agent name",
     "language": "Preferred language",
-    "address_as": "How to address you",
     "timezone_city": "Timezone (city)",
     "timezone": "Timezone (IANA)",
-    "work_context": "Work / study context",
-    "preferences": "Preferences",
-    "avoid": "Things to avoid",
 }
 
 
@@ -55,12 +51,8 @@ class Profile:
     user_name: str = ""
     agent_name: str = "J"
     language: str = "en"  # en | ru
-    address_as: str = ""
     timezone_city: str = "UTC"
     timezone: str = "UTC"
-    work_context: str = ""
-    preferences: str = ""
-    avoid: str = ""
 
     @classmethod
     def from_settings(cls, settings: CompanionSettings) -> Profile:
@@ -68,18 +60,12 @@ class Profile:
             user_name=settings.user_name or "",
             agent_name=settings.agent_name or "J",
             language=settings.language or "en",
-            address_as=settings.address_as or "",
             timezone_city=settings.timezone_city or "UTC",
             timezone=settings.timezone or "UTC",
-            work_context=settings.work_context or "",
-            preferences=settings.preferences or "",
-            avoid=settings.avoid or "",
         )
 
     def has_data(self) -> bool:
-        return bool(self.user_name.strip()) or bool(
-            self.work_context or self.preferences or self.avoid or self.address_as
-        )
+        return bool(self.user_name.strip())
 
 
 def run_hello(
@@ -123,7 +109,8 @@ def _intro_panel() -> Panel:
     return Panel.fit(
         "[bold cyan]Getting to know each other[/bold cyan]\n"
         "A short introduction so Companion can help you better.\n"
-        "UI is English; you can still chat in Russian or English later.",
+        "UI is English; you can still chat in Russian or English later.\n"
+        "I will learn more about you over time and save it to memory myself.",
         border_style="cyan",
     )
 
@@ -155,7 +142,7 @@ def _interview_full(profile: Profile) -> Profile | None:
             if agent is None or agent.strip().lower() == "back":
                 step = 0
                 continue
-            current.agent_name = (agent.strip() or "J")
+            current.agent_name = agent.strip() or "J"
             step = 2
             continue
         if step == 2:
@@ -165,7 +152,6 @@ def _interview_full(profile: Profile) -> Profile | None:
                     questionary.Choice("English", value="en"),
                     questionary.Choice("Russian", value="ru"),
                 ],
-                default=current.language if current.language in {"en", "ru"} else "en",
             )
             if lang in (None, BACK):
                 step = 1
@@ -174,56 +160,12 @@ def _interview_full(profile: Profile) -> Profile | None:
             step = 3
             continue
         if step == 3:
-            address = questionary.text(
-                "How should I address you? (Enter to use your name)",
-                default=current.address_as or current.user_name,
-            ).ask()
-            if address is None or address.strip().lower() == "back":
-                step = 2
-                continue
-            current.address_as = address.strip() or current.user_name
-            step = 4
-            continue
-        if step == 4:
             tz = _pick_timezone(current)
             if tz is None:
-                step = 3
+                step = 2
                 continue
             current.timezone_city, current.timezone = tz
-            step = 5
-            continue
-        if step == 5:
-            work = questionary.text(
-                "Work / study context (optional, Enter to skip):",
-                default=current.work_context or "",
-            ).ask()
-            if work is None or work.strip().lower() == "back":
-                step = 4
-                continue
-            current.work_context = work.strip()
-            step = 6
-            continue
-        if step == 6:
-            prefs = questionary.text(
-                "Preferences — tools, tone, editors (optional):",
-                default=current.preferences or "",
-            ).ask()
-            if prefs is None or prefs.strip().lower() == "back":
-                step = 5
-                continue
-            current.preferences = prefs.strip()
-            step = 7
-            continue
-        if step == 7:
-            avoid = questionary.text(
-                "Things to avoid (optional):",
-                default=current.avoid or "",
-            ).ask()
-            if avoid is None or avoid.strip().lower() == "back":
-                step = 6
-                continue
-            current.avoid = avoid.strip()
-            step = 8
+            step = 4
             continue
 
         confirm = select(
@@ -234,7 +176,7 @@ def _interview_full(profile: Profile) -> Profile | None:
             ],
         )
         if confirm in (None, BACK):
-            step = 7
+            step = 3
             continue
         if not confirm:
             return None
@@ -250,16 +192,7 @@ def _interview_selective(profile: Profile) -> Profile | None:
             f"{FIELD_LABELS[key]} — {_preview(getattr(current, key))}",
             value=key,
         )
-        for key in (
-            "user_name",
-            "agent_name",
-            "language",
-            "address_as",
-            "timezone_city",
-            "work_context",
-            "preferences",
-            "avoid",
-        )
+        for key in ("user_name", "agent_name", "language", "timezone_city")
     ]
     choices.append(questionary.Choice("Replace all fields…", value="__all__"))
     choices.append(questionary.Choice("Cancel", value="__cancel__"))
@@ -277,7 +210,6 @@ def _interview_selective(profile: Profile) -> Profile | None:
                 questionary.Choice("English", value="en"),
                 questionary.Choice("Russian", value="ru"),
             ],
-            default=current.language,
             back=False,
         )
         if lang is None:
@@ -289,7 +221,7 @@ def _interview_selective(profile: Profile) -> Profile | None:
             return None
         current.timezone_city, current.timezone = tz
     else:
-        default = getattr(current, picked) or (current.user_name if picked == "address_as" else "")
+        default = getattr(current, picked) or ""
         if picked == "agent_name":
             default = default or "J"
         entered = questionary.text(
@@ -305,8 +237,6 @@ def _interview_selective(profile: Profile) -> Profile | None:
         if picked == "agent_name":
             value = value or "J"
         setattr(current, picked, value)
-        if picked == "user_name" and not current.address_as:
-            current.address_as = value
 
     confirm = select(
         f"Replace {FIELD_LABELS.get(picked, picked)}?",
@@ -325,11 +255,9 @@ def _pick_timezone(profile: Profile) -> tuple[str, str] | None:
     import questionary
 
     labels = [label for label, _ in TIMEZONE_CITIES]
-    default = profile.timezone_city if profile.timezone_city in labels else "UTC"
     choice = select(
         "Timezone (choose a city):",
         [questionary.Choice(label, value=label) for label in labels],
-        default=default,
     )
     if choice in (None, BACK):
         return None
@@ -355,12 +283,9 @@ def _apply_profile(
     settings.user_name = profile.user_name
     settings.agent_name = profile.agent_name or "J"
     settings.language = profile.language if profile.language in {"en", "ru"} else "en"
-    settings.address_as = profile.address_as or profile.user_name
+    settings.address_as = profile.user_name
     settings.timezone_city = profile.timezone_city
     settings.timezone = profile.timezone
-    settings.work_context = profile.work_context
-    settings.preferences = profile.preferences
-    settings.avoid = profile.avoid
     settings.hello_completed = True
 
     memory.write("user", render_user_md(profile))
@@ -375,11 +300,8 @@ def render_user_md(profile: Profile) -> str:
         f"- Name: {profile.user_name}\n"
         f"- Preferred language: {lang} ({profile.language})\n"
         f"- Timezone: {profile.timezone_city} ({profile.timezone})\n"
-        f"- How they like to be addressed: {profile.address_as or profile.user_name}\n"
-        f"- Work / study context: {profile.work_context or '—'}\n"
-        f"- Preferences (tools, editors, tone): {profile.preferences or '—'}\n"
-        f"- Things to avoid: {profile.avoid or '—'}\n"
         "- Important ongoing context:\n"
+        "  (Companion will fill this in as we work together.)\n"
     )
 
 
@@ -399,7 +321,8 @@ def render_soul_md(profile: Profile) -> str:
         f"- Mirror the user's language and energy; stay clear and useful.\n"
         f"- {lang_line}\n"
         f"- Prefer short, concrete help over long essays unless asked.\n"
-        f"- Remember what matters; ask before overwriting important facts.\n\n"
+        f"- Remember what matters; ask before overwriting important facts.\n"
+        f"- Learn about the user over time and persist durable facts in user.md / memory.md.\n\n"
         f"## Working style\n"
         f"- Use tools when facts or actions are needed; do not invent system state.\n"
         f"- Load a tool category via `load_tool_guide` for tips, then call the unlocked tools.\n"

@@ -17,7 +17,7 @@ from rich.table import Table
 
 from core.audit import DEFAULT_HISTORY_PATH
 from core.config import AppConfig, LLMProvider, load_config, save_config
-from core.safety import SafetyError, run_permission_wizard
+from core.safety import SafetyError
 from core.utils import human_size
 from modes.common_cli import (
     BACK,
@@ -34,6 +34,10 @@ from modes.common_cli import (
 )
 from modes.companion.hello import run_hello
 from modes.companion.memory_store import MemoryStore
+from modes.companion.permissions import (
+    deny_path,
+    run_companion_permission_wizard,
+)
 from modes.companion.reminders import (
     ReminderStore,
     check_reminders,
@@ -60,14 +64,9 @@ def _web_wizard(initial: CompanionSettings | None = None) -> CompanionSettings |
     current = initial or CompanionSettings()
     labels = [label for _, label in WEB_SEARCH_OPTIONS]
     defaults = {label: provider for provider, label in WEB_SEARCH_OPTIONS}
-    current_label = next(
-        (label for provider, label in WEB_SEARCH_OPTIONS if provider is current.web_provider),
-        labels[0],
-    )
     choice = select(
         "Web search provider:",
         [questionary.Choice(label, value=label) for label in labels],
-        default=current_label,
     )
     if choice in (None, BACK):
         return None
@@ -118,7 +117,7 @@ def _run_setup(
     console.print(
         Panel.fit(
             "[bold cyan]J the Agent — Companion setup[/bold cyan]\n"
-            "Model, permissions, web search, and presentation.",
+            "Model, filesystem safety, web search, and presentation.",
             border_style="cyan",
         )
     )
@@ -132,7 +131,7 @@ def _run_setup(
             step = 1
             continue
         if step == 1:
-            safety = run_permission_wizard(config.safety, allow_back=True)
+            safety = run_companion_permission_wizard(config.safety, allow_back=True)
             if safety is None:
                 step = 0
                 continue
@@ -154,7 +153,6 @@ def _run_setup(
                     questionary.Choice("Yes", value=True),
                     questionary.Choice("No — prompt and final answer only", value=False),
                 ],
-                default=config.ui.show_reasoning,
             )
             if reasoning in (None, BACK):
                 step = 2
@@ -340,15 +338,32 @@ def reminders_done(
 
 @app.command()
 def permissions() -> None:
-    """Change filesystem permissions."""
+    """Change Companion filesystem safety (system paths + optional denies)."""
 
     config, _companion = _load_or_setup()
-    safety = run_permission_wizard(config.safety)
+    safety = run_companion_permission_wizard(config.safety)
     if safety is not None:
         config.safety = safety
         config.mode = "companion"
         save_config(config, CONFIG_PATH)
         console.print("[green]Permissions updated.[/green]")
+
+
+@app.command()
+def deny(
+    path: Annotated[str, typer.Argument(help="File or directory path to forbid.")],
+) -> None:
+    """Forbid a file or directory path (no LLM)."""
+
+    config, _companion = _load_or_setup()
+    try:
+        config.safety = deny_path(config.safety, path)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=2) from exc
+    config.mode = "companion"
+    save_config(config, CONFIG_PATH)
+    console.print(f"[green]Forbidden:[/green] {path}")
 
 
 @switch_app.command("model")

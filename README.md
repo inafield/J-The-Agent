@@ -27,8 +27,8 @@ bash <(curl -fsSL https://raw.githubusercontent.com/inafield/J-The-Agent/main/sc
 Скрипт предлагает стрелками выбрать Quick или Companion (Manager пока
 недоступен), затем:
 
-1. использует уже установленный Python 3.11+ или **пытается установить** его
-   (Homebrew на macOS; `apt`/`dnf`/`pacman` на Linux — может запросить `sudo`);
+1. при необходимости ставит **git** и Python 3.11+ (Homebrew / `apt` / `dnf` /
+   `pacman` — может запросить `sudo`);
 2. при необходимости ставит **python3-venv** (Debian/Ubuntu) и создаёт venv;
 3. создаёт отдельный venv в `~/.local/share/j-the-agent`;
 4. копирует в установку только `core` + выбранный режим (второй режим не ставится);
@@ -90,6 +90,7 @@ ja check-reminders              # Companion: overdue without LLM (also on login)
 ja reminders                    # Companion: list reminders (no LLM)
 ja reminders list / done ID
 ja hello                        # Companion: introduction / update profile
+ja deny /path/to/file-or-folder # Companion: forbid a path (no LLM)
 ja allow-local 3000             # Companion: allow localhost:PORT for fetch_url
 ja allow-local --list
 ja version

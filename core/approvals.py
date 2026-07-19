@@ -46,10 +46,13 @@ class ApprovalManager:
                 questionary.Choice("Stop this task", value="stop"),
             ]
         )
+        from core.utils import arrow_select_style
+
         decision = questionary.select(
             f"{prompt}\nChoose with ↑/↓ and press Enter:",
             choices=choices,
-            default="deny",
+            style=arrow_select_style(),
+            instruction="(↑/↓, Enter)",
         ).ask()
         self.remaining = max(0, self.remaining - 1)
         if decision == "all":

@@ -28,25 +28,13 @@ from core.config import (
     load_config,
     save_config,
 )
-from core.utils import get_console
+from core.utils import arrow_select_style, get_console
 
 VERSION = "0.4.0"
 BACK = "__back__"
 CONFIG_PATH = Path(os.getenv("J_AGENT_CONFIG", DEFAULT_CONFIG_PATH)).expanduser()
 INSTALL_HOME = Path(os.getenv("J_AGENT_HOME", Path.home() / ".local/share/j-the-agent"))
 MANIFEST_PATH = INSTALL_HOME / "install-manifest.json"
-
-KNOWN_MODELS: dict[LLMProvider, list[str]] = {
-    LLMProvider.OLLAMA: ["qwen3:8b", "llama3.1:8b", "mistral", "phi3"],
-    LLMProvider.OPENAI: ["gpt-4o-mini", "gpt-4o", "o4-mini"],
-    LLMProvider.OPENROUTER: [
-        "openai/gpt-4o-mini",
-        "anthropic/claude-3.5-sonnet",
-        "meta-llama/llama-3.1-70b-instruct",
-    ],
-    LLMProvider.ANTHROPIC: ["claude-3-5-haiku-latest", "claude-3-5-sonnet-latest"],
-    LLMProvider.GROQ: ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"],
-}
 
 _AT_PATH = re.compile(r"(?:^|\s)@(?:\"([^\"]+)\"|'([^']+)'|(\S+))")
 console: Console = get_console()
@@ -59,15 +47,25 @@ def select(
     default: Any = None,
     back: bool = True,
 ) -> Any:
+    """Arrow menu styled like the installer. ``default`` is ignored (no pre-selection)."""
+
     import questionary
 
+    del default
     items = list(choices)
     if back:
         items.append(questionary.Choice("← Back", value=BACK))
-    return questionary.select(prompt, choices=items, default=default).ask()
+    return questionary.select(
+        prompt,
+        choices=items,
+        style=arrow_select_style(),
+        instruction="(↑/↓, Enter)",
+    ).ask()
 
 
 def model_wizard(initial: LLMSettings | None = None) -> LLMSettings | None:
+    """Provider → free-form model name → API key (stored in config)."""
+
     import questionary
 
     current = initial or LLMSettings()
@@ -82,7 +80,6 @@ def model_wizard(initial: LLMSettings | None = None) -> LLMSettings | None:
             answer = select(
                 "LLM provider:",
                 [questionary.Choice(item.value, value=item) for item in LLMProvider],
-                default=provider,
             )
             if answer in (None, BACK):
                 return None
@@ -95,75 +92,43 @@ def model_wizard(initial: LLMSettings | None = None) -> LLMSettings | None:
             continue
 
         if step == 1:
-            answer = select(
-                "Model:",
-                [
-                    *[questionary.Choice(item, value=item) for item in KNOWN_MODELS[provider]],
-                    questionary.Choice("Custom model name…", value="__custom__"),
-                ],
-                default=model if model in KNOWN_MODELS[provider] else "__custom__",
-            )
-            if answer in (None, BACK):
+            hint = PROVIDER_DEFAULTS[provider]["model"]
+            entered = questionary.text(
+                f"Model name (e.g. {hint}; type 'back' to return):",
+                default=model or hint,
+            ).ask()
+            if entered is None or entered.strip().lower() == "back":
                 step = 0
                 continue
-            if answer == "__custom__":
-                entered = questionary.text(
-                    "Model name (type 'back' to return):",
-                    default=model,
-                ).ask()
-                if entered is None or entered.strip().lower() == "back":
-                    continue
-                model = entered.strip()
-            else:
-                model = answer
+            if not entered.strip():
+                console.print("[yellow]Please enter a model name.[/yellow]")
+                continue
+            model = entered.strip()
             step = 2
             continue
 
         if provider is LLMProvider.OLLAMA:
-            connection = select(
-                "Ollama connection:",
-                [
-                    questionary.Choice(
-                        f"Default ({PROVIDER_DEFAULTS[provider]['base_url']})",
-                        value=PROVIDER_DEFAULTS[provider]["base_url"],
-                    ),
-                    questionary.Choice("Custom URL…", value="__custom__"),
-                ],
-                default=base_url,
-            )
-            if connection in (None, BACK):
+            entered = questionary.text(
+                "Ollama URL (Enter for default; type 'back' to return):",
+                default=base_url or PROVIDER_DEFAULTS[provider]["base_url"],
+            ).ask()
+            if entered is None or entered.strip().lower() == "back":
                 step = 1
                 continue
-            if connection == "__custom__":
-                entered = questionary.text(
-                    "Ollama URL (type 'back' to return):",
-                    default=base_url or PROVIDER_DEFAULTS[provider]["base_url"],
-                ).ask()
-                if entered is None or entered.strip().lower() == "back":
-                    continue
-                base_url = entered.strip()
-            else:
-                base_url = connection
+            base_url = entered.strip() or PROVIDER_DEFAULTS[provider]["base_url"]
             api_key = None
         else:
-            choice = select(
-                f"API key for {provider.value}:",
-                [
-                    questionary.Choice("Use environment variable", value="env"),
-                    questionary.Choice("Store key in config", value="store"),
-                ],
-                default="store" if api_key else "env",
-            )
-            if choice in (None, BACK):
+            entered = questionary.password(
+                f"API key for {provider.value} (stored in config; type 'back' to return):"
+            ).ask()
+            if entered is None or entered.strip().lower() == "back":
                 step = 1
                 continue
-            if choice == "store":
-                entered = questionary.password("API key (type 'back' to return):").ask()
-                if entered is None or entered.strip().lower() == "back":
-                    continue
-                api_key = entered.strip() or None
-            else:
-                api_key = None
+            api_key = entered.strip() or None
+            if not api_key:
+                console.print(
+                    "[yellow]API key is empty — set it later with ja switch model.[/yellow]"
+                )
             base_url = None
 
         return LLMSettings(
@@ -198,7 +163,6 @@ def choose_directory(config: AppConfig) -> bool:
             *[questionary.Choice(str(path), value=str(path)) for path in unique],
             questionary.Choice("Custom directory…", value="__custom__"),
         ],
-        default=str(config.safety.working_directory),
     )
     if answer in (None, BACK):
         return False

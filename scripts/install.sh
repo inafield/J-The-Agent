@@ -122,6 +122,39 @@ install_python() {
   esac
 }
 
+ensure_git() {
+  detect_os
+  if command -v git >/dev/null 2>&1; then
+    return 0
+  fi
+  info "git not found. Installing git (may ask for sudo)…"
+  case "$OS_TYPE" in
+    darwin)
+      if command -v brew >/dev/null 2>&1; then
+        brew install git
+      else
+        # Triggers Xcode CLT installer on macOS when available.
+        xcode-select --install 2>/dev/null || true
+        fail "Install git (or Xcode Command Line Tools), then re-run this script."
+      fi
+      ;;
+    debian)
+      run_privileged apt-get update -qq
+      run_privileged apt-get install -y git
+      ;;
+    fedora)
+      run_privileged dnf install -y git
+      ;;
+    arch)
+      run_privileged pacman -Sy --noconfirm git
+      ;;
+    *)
+      fail "git is required. Install git for your OS, then re-run this script."
+      ;;
+  esac
+  command -v git >/dev/null 2>&1 || fail "git was installed but is not on PATH. Open a new terminal and re-run."
+}
+
 install_venv_packages() {
   local python="$1"
   local ver
@@ -321,14 +354,15 @@ resolve_source() {
     printf '%s' "$source"
     return
   fi
-  command -v git >/dev/null 2>&1 || fail "git is required for a GitHub installation."
+  ensure_git
   mkdir -p "$INSTALL_DIR"
   source="$INSTALL_DIR/source"
   if [[ -d "$source/.git" ]]; then
     git -C "$source" fetch --depth 1 origin "$REPO_BRANCH" >&2
-    git -C "$source" checkout -f FETCH_HEAD >&2
+    git -C "$source" -c advice.detachedHead=false checkout -f FETCH_HEAD >&2
   else
-    git clone --depth 1 --branch "$REPO_BRANCH" "$REPO_URL" "$source" >&2
+    git -c advice.detachedHead=false clone --depth 1 --branch "$REPO_BRANCH" \
+      "$REPO_URL" "$source" >&2
   fi
   prune_other_modes "$mode" "$source"
   printf '%s' "$source"

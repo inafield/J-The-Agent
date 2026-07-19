@@ -39,6 +39,7 @@ class SafetyProfile(StrEnum):
     CURRENT_DIRECTORY = "current_directory"
     DEFAULTS_PLUS_CUSTOM = "defaults_plus_custom"
     CUSTOM_ONLY = "custom_only"
+    COMPANION = "companion"
 
 
 PROVIDER_DEFAULTS: dict[LLMProvider, dict[str, str]] = {

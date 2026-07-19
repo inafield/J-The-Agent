@@ -52,3 +52,25 @@ def confirm(prompt: str, *, default: bool = False) -> bool:
     from rich.prompt import Confirm
 
     return Confirm.ask(prompt, default=default, console=get_console())
+
+
+@lru_cache(maxsize=1)
+def arrow_select_style():
+    """Questionary style matching ``install.sh`` (green active row, no reverse video)."""
+
+    from questionary import Style
+
+    return Style(
+        [
+            ("qmark", "fg:cyan bold"),
+            ("question", "bold"),
+            ("answer", "fg:cyan"),
+            ("pointer", "fg:green bold"),
+            ("highlighted", "fg:green bold"),
+            ("selected", "fg:green"),
+            ("separator", "fg:ansigray"),
+            ("instruction", "fg:ansigray"),
+            ("text", ""),
+            ("disabled", "fg:ansigray italic"),
+        ]
+    )

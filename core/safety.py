@@ -462,10 +462,13 @@ def run_permission_wizard(
     ]
     if allow_back:
         choices.append(questionary.Choice("← Back", value=back))
+    from core.utils import arrow_select_style
+
     profile = questionary.select(
         "Choose a security profile (↑/↓, Enter):",
         choices=choices,
-        default=current.profile,
+        style=arrow_select_style(),
+        instruction="(↑/↓, Enter)",
     ).ask()
     if profile in (None, back):
         return None if allow_back else _raise_keyboard_interrupt()
@@ -523,7 +526,8 @@ def run_permission_wizard(
                 questionary.Choice("No — return to profiles", value=False),
                 questionary.Choice("Yes, I understand the risk", value=True),
             ],
-            default=False,
+            style=arrow_select_style(),
+            instruction="(↑/↓, Enter)",
         ).ask()
         if not warning:
             return run_permission_wizard(initial, allow_back=allow_back)
@@ -554,6 +558,8 @@ def _collect_forbidden_paths(console) -> tuple[list[Path], list[str]] | None:
             console.print("[dim]Current forbidden paths:[/dim]")
             for item in rendered:
                 console.print(f"  [red]×[/red] {item}")
+        from core.utils import arrow_select_style
+
         action = questionary.select(
             "Forbidden paths:",
             choices=[
@@ -561,7 +567,8 @@ def _collect_forbidden_paths(console) -> tuple[list[Path], list[str]] | None:
                 questionary.Choice("Done", value="done"),
                 questionary.Choice("← Back", value="back"),
             ],
-            default="add" if not rendered else "done",
+            style=arrow_select_style(),
+            instruction="(↑/↓, Enter)",
         ).ask()
         if action in (None, "back"):
             return None
